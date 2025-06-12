@@ -21,13 +21,13 @@ public class AIManager : MonoBehaviour
     public int gridWidth = 20;
     public int gridHeight = 10;
     [Range(0, 1)]
-    public float wallDensity = 0.15f;
+    public float wallDensity = 0.1f;
 
     [Header("Tham số Huấn luyện")]
-    public int totalEpisodes = 30000;
-    public int maxStepsPerEpisode = 200;
+    public int totalEpisodes = 50000;
+    public int maxStepsPerEpisode = 50;
     public bool enableTraining = true;
-    public int reportInterval = 100; // In báo cáo sau mỗi 100 ván
+    public int reportInterval = 100;
 
     //--------------------------------------------------------------------------------
     // --- BIẾN NỘI BỘ CỦA AI ---
@@ -40,10 +40,11 @@ public class AIManager : MonoBehaviour
     private Dictionary<string, float[]> qTable = new Dictionary<string, float[]>();
     private int actionCount = 4; // 0:Lên, 1:Xuống, 2:Trái, 3:Phải
 
-    private float learningRate = 0.1f;
-    private float gamma = 0.95f;
+    // Các tham số đã được tinh chỉnh để học tốt hơn
+    private float learningRate = 0.05f;
+    private float gamma = 0.99f;
     private float epsilon = 1.0f;
-    private float epsilonDecay = 0.9999f;
+    private float epsilonDecay = 0.99995f;
     private float minEpsilon = 0.01f;
 
     // Biến để thu thập dữ liệu cho báo cáo
@@ -51,11 +52,14 @@ public class AIManager : MonoBehaviour
     private List<float> episodeRewards = new List<float>();
     private int winCount = 0;
 
-
     //================================================================================
     // --- VÒNG LẶP CHÍNH CỦA UNITY & AI ---
     //================================================================================
 
+    void Awake()
+    {
+        Application.runInBackground = true;
+    }
     void Start()
     {
         if (enableTraining)
@@ -76,6 +80,8 @@ public class AIManager : MonoBehaviour
         }
     }
 
+    // Thay thế toàn bộ IEnumerator TrainingLoop() bằng phiên bản này
+
     IEnumerator TrainingLoop()
     {
         Debug.Log("Bắt đầu huấn luyện... Vui lòng đợi.");
@@ -90,49 +96,66 @@ public class AIManager : MonoBehaviour
 
             while (!episodeDone && steps < maxStepsPerEpisode)
             {
-                // ... (Lấy trạng thái, chọn hành động, di chuyển) ...
                 string currentState = GetState(playerTransform.position);
                 int action = ChooseAction(currentState);
+
+                float distanceBeforeMove = Vector2.Distance(playerTransform.position, goldInstance.position);
                 Vector2 oldPos = playerTransform.position;
                 MovePlayer(action);
 
-                float reward = -1f; // Phạt -1 cho mỗi bước đi mặc định
-                bool hitWall = false;
+                float reward = 0f;
+                bool hitTerminalState = false;
 
                 Collider2D hitCollider = Physics2D.OverlapCircle(playerTransform.position, 0.4f);
                 if (hitCollider != null)
                 {
                     if (hitCollider.CompareTag("Wall"))
                     {
+                        // Đâm vào tường là kết quả tệ nhất
                         reward = -100f;
                         episodeDone = true;
-                        hitWall = true;
+                        hitTerminalState = true;
+                        playerTransform.position = oldPos;
                     }
                     else if (hitCollider.CompareTag("Gold"))
                     {
+                        // Ăn vàng là kết quả tốt nhất
                         reward = 100f;
                         episodeDone = true;
+                        hitTerminalState = true;
                         winCount++;
                     }
                 }
-                if (hitWall) playerTransform.position = oldPos;
 
-                
-                steps++;
+                // Kỹ thuật "Reward Shaping"
+                if (!hitTerminalState)
+                {
+                    float distanceAfterMove = Vector2.Distance(playerTransform.position, goldInstance.position);
+                    if (distanceAfterMove < distanceBeforeMove)
+                    {
+                        reward = 1f; // Thưởng nhỏ vì đi đúng hướng
+                    }
+                    else
+                    {
+                        reward = -2f; // Phạt nhỏ vì đi sai hướng
+                    }
+                }
 
-                // KIỂM TRA ĐIỀU KIỆN HẾT GIỜ SAU CÙNG
+                steps++; // Tăng số bước sau khi di chuyển và tính thưởng
+
+                // Kiểm tra điều kiện hết giờ sau cùng
                 if (!episodeDone && steps >= maxStepsPerEpisode)
                 {
-                    // Nếu không có sự kiện gì xảy ra và đây là bước cuối cùng
-                    reward = -20f; // Gán một hình phạt cụ thể cho việc hết giờ
+                    // Hết giờ thì tệ, nhưng vẫn tốt hơn là đâm vào tường
+                    reward = -50f;
                     episodeDone = true;
                 }
 
-
-                // Cập nhật Q-Table với reward cuối cùng đã được xác định
                 totalRewardForEpisode += reward;
+
                 string newState = GetState(playerTransform.position);
                 UpdateQTable(currentState, action, reward, newState);
+
                 yield return null;
             }
 
@@ -143,7 +166,6 @@ public class AIManager : MonoBehaviour
             if ((i + 1) % reportInterval == 0)
             {
                 PrintReport(i + 1);
-                // Lưu model định kỳ
                 if ((i + 1) % (reportInterval * 10) == 0) SaveQTable();
             }
         }
@@ -162,7 +184,8 @@ public class AIManager : MonoBehaviour
         {
             ResetEpisode();
             bool episodeDone = false;
-            while (!episodeDone)
+            int steps = 0;
+            while (!episodeDone && steps < maxStepsPerEpisode)
             {
                 string currentState = GetState(playerTransform.position);
                 int action = ChooseAction(currentState);
@@ -174,6 +197,7 @@ public class AIManager : MonoBehaviour
                     if (hitCollider.CompareTag("Gold")) { episodeDone = true; Debug.Log("Thắng!"); }
                     else if (hitCollider.CompareTag("Wall")) { episodeDone = true; Debug.Log("Thua!"); }
                 }
+                steps++;
                 yield return new WaitForSeconds(0.15f);
             }
             yield return new WaitForSeconds(2f);
@@ -181,26 +205,38 @@ public class AIManager : MonoBehaviour
     }
 
     //================================================================================
-    // --- LOGIC CỐT LÕI CỦA AI ---
+    // --- LOGIC CỐT LÕI CỦA AI (ĐÃ NÂNG CẤP) ---
     //================================================================================
-
-    #region AI Logic Functions
 
     string GetState(Vector2 playerPos)
     {
         StringBuilder stateBuilder = new StringBuilder();
+
+        // 1. Nhận thức về tường
         stateBuilder.Append(IsWallAt(playerPos + Vector2.up) ? '1' : '0');
         stateBuilder.Append(IsWallAt(playerPos + Vector2.down) ? '1' : '0');
         stateBuilder.Append(IsWallAt(playerPos + Vector2.left) ? '1' : '0');
         stateBuilder.Append(IsWallAt(playerPos + Vector2.right) ? '1' : '0');
 
-        Vector2 goldPos = goldInstance != null ? (Vector2)goldInstance.position : new Vector2(999, 999);
+        // 2. Hướng đến vàng
+        Vector2 goldPos = goldInstance != null ? (Vector2)goldInstance.position : playerPos;
         stateBuilder.Append(goldPos.y > playerPos.y ? '1' : '0');
         stateBuilder.Append(goldPos.y < playerPos.y ? '1' : '0');
         stateBuilder.Append(goldPos.x < playerPos.x ? '1' : '0');
         stateBuilder.Append(goldPos.x > playerPos.x ? '1' : '0');
 
+        // 3. NÂNG CẤP: Khoảng cách đến vàng
+        float distanceToGold = Vector2.Distance(playerPos, goldPos);
+        stateBuilder.Append(GetDistanceCategory(distanceToGold));
+
         return stateBuilder.ToString();
+    }
+
+    string GetDistanceCategory(float distance)
+    {
+        if (distance < 4) return "_NEAR";
+        if (distance < 8) return "_MID";
+        return "_FAR";
     }
 
     bool IsWallAt(Vector2 position)
@@ -231,17 +267,13 @@ public class AIManager : MonoBehaviour
         return qTable[state];
     }
 
-    #endregion
-
     //================================================================================
     // --- QUẢN LÝ GAME & TIỆN ÍCH ---
     //================================================================================
 
-    #region Game Management & Helpers
-
     void ResetEpisode()
     {
-        foreach (var wall in wallInstances) Destroy(wall);
+        foreach (var wall in wallInstances) if (wall != null) Destroy(wall);
         wallInstances.Clear();
         if (goldInstance != null) Destroy(goldInstance.gameObject);
 
@@ -249,7 +281,7 @@ public class AIManager : MonoBehaviour
         {
             for (int y = -gridHeight / 2; y < gridHeight / 2; y++)
             {
-                if ((Mathf.Abs(x) < 2 && Mathf.Abs(y) < 2)) continue;
+                if (Mathf.Abs(x) < 2 && Mathf.Abs(y) < 2) continue;
                 if (Random.Range(0f, 1f) < wallDensity)
                 {
                     GameObject wall = Instantiate(wallPrefab, new Vector2(x, y), Quaternion.identity);
@@ -280,15 +312,13 @@ public class AIManager : MonoBehaviour
         if (action == 1) moveVector = Vector2.down;
         if (action == 2) moveVector = Vector2.left;
         if (action == 3) moveVector = Vector2.right;
-
         Vector2 targetPosition = (Vector2)playerTransform.position + moveVector;
         if (IsPositionInGrid(targetPosition)) playerTransform.position = targetPosition;
     }
 
     bool IsPositionInGrid(Vector2 position)
     {
-        return (position.x >= -gridWidth / 2f && position.x < gridWidth / 2f &&
-                position.y >= -gridHeight / 2f && position.y < gridHeight / 2f);
+        return (position.x >= -gridWidth / 2f && position.x < gridWidth / 2f && position.y >= -gridHeight / 2f && position.y < gridHeight / 2f);
     }
 
     void PrintReport(int currentEpisode)
@@ -309,19 +339,26 @@ public class AIManager : MonoBehaviour
         winCount = 0;
     }
 
-    #endregion
-
     //================================================================================
     // --- LƯU & TẢI MODEL ---
     //================================================================================
 
-    #region Save & Load
+    // Bên trong hàm SaveQTable()
 
     private void SaveQTable()
     {
-        string path = Path.Combine(Application.persistentDataPath, "qtable_random_env.dat");
+        // Lấy đường dẫn đến màn hình Desktop một cách tự động
+        string desktopPath = System.Environment.GetFolderPath(System.Environment.SpecialFolder.Desktop);
+        // Đặt một tên file mới để phân biệt
+        string fileName = "qtable_on_desktop.dat";
+        // Kết hợp đường dẫn Desktop và tên file
+        string path = Path.Combine(desktopPath, fileName);
+
+        Debug.Log("Đang lưu Q-Table ra Desktop tại: " + path);
+
         try
         {
+            // ... (phần còn lại của hàm giữ nguyên) ...
             using (StreamWriter writer = new StreamWriter(path, false))
             {
                 writer.WriteLine(epsilon.ToString(CultureInfo.InvariantCulture));
@@ -335,13 +372,20 @@ public class AIManager : MonoBehaviour
         catch (System.Exception e) { Debug.LogError("Lỗi khi lưu Bảng Q: " + e.Message); }
     }
 
+    // Bên trong hàm LoadQTable()
     private bool LoadQTable()
     {
-        string path = Path.Combine(Application.persistentDataPath, "qtable_random_env.dat");
+        // Lấy đường dẫn đến màn hình Desktop
+        string desktopPath = System.Environment.GetFolderPath(System.Environment.SpecialFolder.Desktop);
+        string fileName = "qtable_on_desktop.dat";
+        string path = Path.Combine(desktopPath, fileName);
+
         if (File.Exists(path))
         {
+            Debug.Log("Tìm thấy model đã lưu trên Desktop. Đang tải...");
             try
             {
+                // ... (phần còn lại của hàm giữ nguyên) ...
                 qTable.Clear();
                 string[] lines = File.ReadAllLines(path);
                 if (lines.Length < 1) return false;
@@ -359,6 +403,7 @@ public class AIManager : MonoBehaviour
                     }
                     qTable[state] = values;
                 }
+                Debug.Log($"Model đã tải thành công. Có {qTable.Count} trạng thái đã biết.");
                 return true;
             }
             catch (System.Exception e)
@@ -369,39 +414,5 @@ public class AIManager : MonoBehaviour
             }
         }
         return false;
-    }
-    #endregion
-
-    // Dán hàm này vào trong script AIManager.cs của bạn
-
-    void OnDrawGizmos()
-    {
-        // Đặt màu cho các đường lưới (ví dụ: một màu xám bán trong suốt)
-        Gizmos.color = new Color(0.5f, 0.5f, 0.5f, 0.4f);
-
-        // Tính toán các đường biên của lưới
-        // Giả sử lưới của bạn đối xứng quanh gốc tọa độ (0,0)
-        float startX = -gridWidth / 2f;
-        float startY = -gridHeight / 2f;
-        float endX = gridWidth / 2f;
-        float endY = gridHeight / 2f;
-
-        // Vẽ các đường kẻ dọc
-        for (int x = 0; x <= gridWidth; x++)
-        {
-            float xPos = startX + x;
-            Vector3 from = new Vector3(xPos, startY, 0);
-            Vector3 to = new Vector3(xPos, endY, 0);
-            Gizmos.DrawLine(from, to);
-        }
-
-        // Vẽ các đường kẻ ngang
-        for (int y = 0; y <= gridHeight; y++)
-        {
-            float yPos = startY + y;
-            Vector3 from = new Vector3(startX, yPos, 0);
-            Vector3 to = new Vector3(endX, yPos, 0);
-            Gizmos.DrawLine(from, to);
-        }
     }
 }
